@@ -8,6 +8,7 @@ Renderer of radar data for MistNet
 @TODO: Implement scan selector for multiple scans at the same elevation and different PRFs
 @TODO: Implement filter that selects only data where DBZH value (for ODIM data) is non-zero/non-NaN
 @TODO: Implement graceful SIGTERM signals
+@TODO: Add logger
 
 """
 import os
@@ -213,7 +214,8 @@ def select_datasets_odim(trg_elevs, meta):
 
     # Pick elevations closest to trg_elevs
     picked_elevs = [min(elevations, key=lambda x: abs(x - trg_elev)) for trg_elev in trg_elevs]
-    print(picked_elevs)
+    if len(set(picked_elevs)) < len(picked_elevs):
+        picked_elevs = pick_elevations_iteratively(elevations, trg_elevs)
 
     # Find datasets that contain picked_elevs
     picked_datasets = []
@@ -406,6 +408,20 @@ def get_azimuths_ranges_odim(meta, dataset):
     az = np.arange(0, 360, 360 / meta[dataset]['azim_bins'])
 
     return az, r
+
+
+def pick_elevations_iteratively(elevations, target_elevs):
+    picked_elevs = []
+
+    for trg_elev in target_elevs:
+        if len(elevations) == 0:
+            break
+
+        picked_elev = min(elevations, key=lambda x: abs(x - trg_elev))
+        picked_elevs.append(picked_elev)
+        elevations.remove(picked_elev)
+
+    return picked_elevs
 
 
 def load_nexrad_file(file):
