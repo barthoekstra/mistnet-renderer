@@ -159,8 +159,6 @@ def extract_odim_metadata(f):
     except KeyError:
         # We are probably dealing with an ODIM conversion of a NEXRAD file, which lacks the NOD and WMO codes
         country = ['United States']
-    else:
-        country = ['United States']
 
     meta['country'] = country[0]
 
