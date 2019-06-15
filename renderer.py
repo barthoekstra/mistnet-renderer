@@ -175,6 +175,8 @@ def extract_odim_metadata(f):
         meta[dataset]['range_scale'] = f[dataset]['where'].attrs.get('rscale')
         meta[dataset]['range_bins'] = f[dataset]['where'].attrs.get('nbins')
         meta[dataset]['azim_bins'] = f[dataset]['where'].attrs.get('nrays')
+        meta[dataset]['prf_high'] = f[dataset]['how'].attrs.get('highprf')
+        meta[dataset]['prf_low'] = f[dataset]['how'].attrs.get('lowprf')
 
         meta[dataset] = {k: v[0] if type(v) is np.ndarray else v for k, v in meta[dataset].items()}  # unpack entirely
 
