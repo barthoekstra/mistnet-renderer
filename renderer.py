@@ -62,7 +62,12 @@ def render_radar_file(file, radartype=None, output_file=None, output_type=None):
             # Some error reading the file occurred.
             return
 
-        selected_datasets = select_datasets_odim(target_elevations, meta)
+        try:
+            selected_datasets = select_datasets_odim(target_elevations, meta)
+        except ValueError as e:
+            print('{}: {}'.format(file.name, e))
+            return
+
         meta['selected_datasets'] = selected_datasets
 
         interpolated_datasets = {}
@@ -201,8 +206,12 @@ def select_datasets_odim(trg_elevs, meta):
     elevations = [elevation[0] if type(elevation) is np.ndarray else elevation for elevation in elevations]
     elevations = list(sorted(set(elevations)))
 
-    # Pick elevations closest to trg_elevs
     trg_elevs = trg_elevs[meta['country']]
+    if len(elevations) < len(trg_elevs):
+        raise ValueError('Number of available elevations ({}) lower than number of target elevations ({}).'
+                         .format(len(elevations), len(trg_elevs)))
+
+    # Pick elevations closest to trg_elevs
     picked_elevs = [min(elevations, key=lambda x: abs(x - trg_elev)) for trg_elev in trg_elevs]
     print(picked_elevs)
 
