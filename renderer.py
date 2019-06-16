@@ -5,9 +5,8 @@ Renderer of radar data for MistNet
 
 @TODO: Implement argparse interface
 @TODO: Implement check if dimensions of generated/stacked numpy array are what they should be
-@TODO: Implement scan selector for multiple scans at the same elevation and different PRFs
-@TODO: Implement filter that selects only data where DBZH value (for ODIM data) is non-zero/non-NaN
 @TODO: Implement graceful SIGTERM signals
+@TODO: Add logger
 
 """
 import os
@@ -16,6 +15,7 @@ import time
 import pathlib
 import warnings
 from multiprocessing import Pool
+from datetime import datetime
 
 import h5py
 import numpy as np
@@ -38,8 +38,11 @@ target_dp_products = {'Germany': ['RHOHV', 'ZDR'],
                       'Netherlands': ['RHOHV', 'ZDR'],
                       'United States': []}
 skipped_scans = {'Germany': [],
-                 'Netherlands': ['dataset7', 'dataset16'],
+                 'Netherlands': [],
                  'United States': []}
+correct_products_with_reflectivity = {'Germany': ['RHOHV'],
+                                      'Netherlands': [],
+                                      'United States': []}
 
 with open(os.environ['ODIM_DATABASE']) as json_file:
     radars_meta_db = json.load(json_file)
@@ -49,7 +52,7 @@ def render_radar_file(file, radartype=None, output_file=None, output_type=None):
     file = pathlib.Path(file).resolve()
 
     if output_type is None:
-        output_type = 'npz'
+        output_type = 'mat'
 
     if output_file is None:
         output_file = pathlib.Path(file.parent.as_posix() + '/' + file.stem + '.' + output_type)
@@ -62,16 +65,23 @@ def render_radar_file(file, radartype=None, output_file=None, output_type=None):
             # Some error reading the file occurred.
             return
 
-        selected_datasets = select_datasets_odim(target_elevations, meta)
+        try:
+            selected_datasets = select_datasets_odim(target_elevations, meta)
+        except ValueError as e:
+            print('{}: {}'.format(file.name, e))
+            return
+
         meta['selected_datasets'] = selected_datasets
 
         interpolated_datasets = {}
 
-        for dataset in meta['selected_datasets']:
-            selected_data_sp = {key: value for key, value in meta[dataset]['products'].items()
-                                if key in target_sp_products[meta['country']]}
-            selected_data_dp = {key: value for key, value in meta[dataset]['products'].items()
-                                if key in target_dp_products[meta['country']]}
+        for elevation, datasets in meta['selected_datasets'].items():
+            selected_data_sp = {product: {'dataset': dataset, 'data': meta[dataset]['products'][product]}
+                                for product, dataset in datasets.items()
+                                if product in target_sp_products[meta['country']]}
+            selected_data_dp = {product: {'dataset': dataset, 'data': meta[dataset]['products'][product]}
+                                for product, dataset in datasets.items()
+                                if product in target_dp_products[meta['country']]}
 
             selected_data = {}
             selected_data.update(selected_data_sp)
@@ -79,24 +89,27 @@ def render_radar_file(file, radartype=None, output_file=None, output_type=None):
 
             products = {}
 
-            for productname, product in selected_data.items():
-                data, calib = parse_odim_data(odimfile, dataset, product)
-                products[productname] = data
+            for product, location in selected_data.items():
+                data, _ = parse_odim_data(odimfile, location['dataset'], location['data'])
+                products[product] = {'dataset': location['dataset'], 'data': data}
+
+            products = correct_with_reflectivity(products, correct_products_with_reflectivity[meta['country']])
 
             # Calculate ZDR if DBZV is present and remove DBZV after doing so
             if 'DBZV' in products.keys():
-                products['ZDR'] = products['DBZH'] - products['DBZV']
+                products['ZDR'] = {'data': products['DBZH']['data'] - products['DBZV']['data'],
+                                   'dataset': products['DBZH']['dataset']}
                 products.pop('DBZV')
-                target_dp_products[meta['country']].remove('DBZH')
-                target_dp_products[meta['country']].remove('DBZV')
 
-            azimuths, ranges = get_azimuths_ranges_odim(meta, dataset)
+            interpolated_data = interpolate_scan_products(meta=meta, products=products, elevation=elevation,
+                                                          r_max=range_max, pix_dims=pixel_dimensions, padding=padding)
 
-            interpolated_data = interpolate_scan_products(products=products, azimuths=azimuths, ranges=ranges,
-                                                          elevation=meta[dataset]['elevation'], r_max=range_max,
-                                                          pix_dims=pixel_dimensions, padding=padding)
+            interpolated_datasets[elevation] = interpolated_data
 
-            interpolated_datasets[dataset] = interpolated_data
+        if 'DBZH' in target_dp_products[meta['country']]:
+            target_dp_products[meta['country']].remove('DBZH')
+            target_dp_products[meta['country']].remove('DBZV')
+            target_dp_products[meta['country']].extend(['ZDR'])
 
         sp_data, dp_data = stack_interpolated_datasets(interpolated_datasets, target_sp_products[meta['country']],
                                                        target_dp_products[meta['country']])
@@ -153,17 +166,16 @@ def extract_odim_metadata(f):
     except KeyError:
         # We are probably dealing with an ODIM conversion of a NEXRAD file, which lacks the NOD and WMO codes
         country = ['United States']
-    else:
-        country = ['United States']
 
     meta['country'] = country[0]
+    meta['wavelength'] = f['how'].attrs.get('wavelength')
 
     # Loop over datasets to extract products and corresponding elevations
     for dataset in f:
-        meta[dataset] = {}
-
         if not f[dataset].name.startswith('/dataset'):
             continue
+
+        meta[dataset] = {}
 
         meta[dataset]['elevation'] = f[dataset]['where'].attrs.get('elangle')
         meta[dataset]['elevation'] = f[dataset]['where'].attrs.get('elangle')
@@ -171,6 +183,14 @@ def extract_odim_metadata(f):
         meta[dataset]['range_scale'] = f[dataset]['where'].attrs.get('rscale')
         meta[dataset]['range_bins'] = f[dataset]['where'].attrs.get('nbins')
         meta[dataset]['azim_bins'] = f[dataset]['where'].attrs.get('nrays')
+        meta[dataset]['prf_high'] = f[dataset]['how'].attrs.get('highprf')
+        meta[dataset]['prf_low'] = f[dataset]['how'].attrs.get('lowprf')
+        dt_start = '{}T{}'.format(f[dataset]['what'].attrs.get('startdate').decode('UTF-8'),
+                                  f[dataset]['what'].attrs.get('starttime').decode('UTF-8'))
+        dt_end = '{}T{}'.format(f[dataset]['what'].attrs.get('enddate').decode('UTF-8'),
+                                f[dataset]['what'].attrs.get('endtime').decode('UTF-8'))
+        meta[dataset]['dt_start'] = datetime.strptime(dt_start, '%Y%m%dT%H%M%S')
+        meta[dataset]['dt_end'] = datetime.strptime(dt_end, '%Y%m%dT%H%M%S')
 
         meta[dataset] = {k: v[0] if type(v) is np.ndarray else v for k, v in meta[dataset].items()}  # unpack entirely
 
@@ -187,28 +207,35 @@ def extract_odim_metadata(f):
     return meta
 
 
-def select_datasets_odim(trg_elevs, meta):
+def select_datasets_odim(trg_elevs, meta, select_best_scans=True):
     """
     Scans closest to trg_elevs are picked. Throws an exception if these do not contain target_sp_products and
     target_dp_products or if target_dp_products cannot be derived from other existing products.
 
     :param trg_elevs: list of target elevations
     :param meta: radar metadata dictionary
+    :param select_best_scans: True (default) if best scan from multiple scans at the same elevation should be picked
+        based on highest unambiguous velocity interval (for VRADH and WRADH) and lowest PRF (for DBZH).
     :return: names of datasets containing scans closest to trg_elevs
     """
     # Extract elevations from meta dictionary
     elevations = [dataset['elevation'] for key, dataset in meta.items() if key.startswith('dataset')]
     elevations = [elevation[0] if type(elevation) is np.ndarray else elevation for elevation in elevations]
-    elevations = list(sorted(set(elevations)))
+    uniq_elevations = list(sorted(set(elevations)))
+
+    trg_elevs = trg_elevs[meta['country']]
+    if len(uniq_elevations) < len(trg_elevs):
+        raise ValueError('Number of available elevations ({}) lower than number of target elevations ({}).'
+                         .format(len(elevations), len(trg_elevs)))
 
     # Pick elevations closest to trg_elevs
-    trg_elevs = trg_elevs[meta['country']]
-    picked_elevs = [min(elevations, key=lambda x: abs(x - trg_elev)) for trg_elev in trg_elevs]
-    print(picked_elevs)
+    picked_elevs = [min(uniq_elevations, key=lambda x: abs(x - trg_elev)) for trg_elev in trg_elevs]
+    if len(set(picked_elevs)) < len(picked_elevs):
+        picked_elevs = pick_elevations_iteratively(uniq_elevations, trg_elevs)
+
+    picked_datasets = {}
 
     # Find datasets that contain picked_elevs
-    picked_datasets = []
-
     for picked_elev in picked_elevs:
         for key, value in meta.items():
             if not key.startswith('dataset'):
@@ -239,13 +266,28 @@ def select_datasets_odim(trg_elevs, meta):
                                         format(picked_elev))
                     else:
                         target_dp_products[meta['country']].extend(['DBZH', 'DBZV'])
+                        target_dp_products[meta['country']].remove('ZDR')
 
                 # Check if RHOHV is missing, which we cannot compute from existing products
                 if 'RHOHV' not in value['products']:
                     raise Exception('RHOHV is missing at target elevation: {}'.format(picked_elev))
 
-            # Apparently all picked elevations are fine to use
-            picked_datasets.append(key)
+            dataset = {product: key for product in target_sp_products[meta['country']]}
+            dataset.update({product: key for product in target_dp_products[meta['country']]})
+            dataset['prf_high'] = value['prf_high']
+            dataset['prf_low'] = value['prf_low']
+            dataset['dt_end'] = value['dt_end']
+
+            if value['elevation'] in picked_datasets.keys():
+                picked_datasets[value['elevation']].extend([dataset])
+            else:
+                picked_datasets[value['elevation']] = [dataset]
+
+    if select_best_scans:
+        picked_datasets = pick_best_scans(meta, picked_datasets)
+
+    # Now flatten/unpack datasets dictionary
+    picked_datasets = {elevation: datasets[0] for elevation, datasets in picked_datasets.items()}
 
     return picked_datasets
 
@@ -278,17 +320,37 @@ def parse_odim_data(f, dataset, product):
     return corrected_data, calibration
 
 
-def interpolate_scan_products(products, azimuths, ranges, elevation, r_max, pix_dims, padding):
+def correct_with_reflectivity(products, products_to_correct):
+    """
+    For some countries certain products contain non-zero/non-nan values where they should in fact be set to np.nan. In
+    these cases we set these products to np.nan where DBZH values are np.nan.
+
+    :param products: products dictionary
+    :param products_to_correct: list of product names to correct with reflectivity
+    :return: products dictionary with corrected values
+    """
+    DBZH_nan = np.isnan(products['DBZH']['data'])
+
+    for productname, product in products.items():
+        if productname != 'DBZH' and productname in products_to_correct:
+            products[productname]['data'][DBZH_nan] = np.nan
+
+    return products
+
+
+def interpolate_scan_products(meta, products, elevation, r_max, pix_dims, padding):
     """
     Interpolates all provided products belonging to a single scan at once, so coordinates are calculated just once.
     Based on radar2mat code from the WSRLIB package:
     Sheldon, Daniel. WSRLIB: MATLAB Toolbox for Weather Surveillance Radar. http://bitbucket.org/dsheldon/wsrlib, 2015.
 
-    @NOTE: If implemented with NEXRAD radar support: make sure azimuths are always sorted.
+    NOTE: If implemented with NEXRAD radar support: make sure azimuths are always sorted.
 
+    NOTE: If r_max > max range of radar product, all values are set to np.nan. This causes a hard cut-off. Are there
+        better solutions?
+
+    :param meta: radar metadata dictionary
     :param products: dictionary of products with names as keys
-    :param azimuths: 1D array of azimuths
-    :param ranges: 1D array of ranges
     :param elevation: elevation in degrees
     :param r_max: maximum range of the interpolation in meters
     :param pix_dims: width and height dimension of the interpolated image
@@ -326,13 +388,24 @@ def interpolate_scan_products(products, azimuths, ranges, elevation, r_max, pix_
 
         return s
 
-    groundranges = slant2ground(ranges, elevation)
-
-    aa, rr = np.meshgrid(groundranges, azimuths)
     interpolated_products = {}
 
     for product_name, product in products.items():
-        i = interpolate.griddata((aa.ravel(), rr.ravel()), product.ravel(), (R, PHI), method='nearest')
+
+        azimuths, ranges = get_azimuths_ranges_odim(meta, product['dataset'])
+
+        product_maxrange = meta[product['dataset']]['range_scale'] * meta[product['dataset']]['range_bins']
+        maxrange_mask = R > product_maxrange
+
+        groundranges = slant2ground(ranges, elevation)
+
+        aa, rr = np.meshgrid(groundranges, azimuths)
+
+        i = interpolate.griddata((aa.ravel(), rr.ravel()), product['data'].ravel(), (R, PHI), method='nearest')
+
+        # Now remove nearest neighbour interpolation outside of product_maxrange
+        i[maxrange_mask] = np.nan
+
         i = np.pad(i, padding, mode='constant', constant_values=np.nan)
         interpolated_products[product_name] = i
 
@@ -399,6 +472,99 @@ def get_azimuths_ranges_odim(meta, dataset):
     return az, r
 
 
+def pick_elevations_iteratively(elevations, target_elevs):
+    picked_elevs = []
+
+    for trg_elev in target_elevs:
+        if len(elevations) == 0:
+            break
+
+        picked_elev = min(elevations, key=lambda x: abs(x - trg_elev))
+        picked_elevs.append(picked_elev)
+        elevations.remove(picked_elev)
+
+    return picked_elevs
+
+
+def pick_best_scans(meta, datasets):
+    """
+    Loops over selected datasets and selects the right datasets for the products based on unambiguous velocities and
+    time. It starts by selecting the scans with the highest unambiguous velocity interval for VRADH and WRADH data and
+    subsequently picks the scan with the lowest prf (and the least range folding) for DBZH data.
+
+    NOTE: Although probably unnecessary, an exception is raised when there are two scans at the same elevation with the
+        same highest value of the unambiguous velocity. Future improvement with a nearest-neighbour lookup with the
+        unambiguous velocity values and time?
+
+    :param meta: radar metadata dictionary
+    :param datasets: picked_datasets dictionary
+    :return: best datasets for each elevation based on unambiguous velocities and time of scan
+    """
+    for elevation, scans in datasets.items():
+        # Check if there are multiple scans at a given elevation
+        if len(scans) > 1:
+            # Now calculate the unambiguous velocity (interval) for all scans at this elevation
+            unamb_velocity = [calculate_unambiguous_velocities(meta['wavelength'], scan['prf_high'], scan['prf_low'])
+                              for scan in scans]
+
+            highest_unamb_velocity = max(unamb_velocity)
+
+            # Check if 2 or more scans have the same highest value of the unambiguous velocity
+            if unamb_velocity.count(highest_unamb_velocity) > 1:
+                raise Exception('Two or more scans at elevation {} share the same unambiguous velocity. Add one of the '
+                                'scans to skipped_scans, so only a single scan can be selected based on the '
+                                'highest unambiguous velocity.'.format(elevation))
+
+            hi = unamb_velocity.index(highest_unamb_velocity)  # index of highest
+            highest_unamb_velocity_dataset = scans[hi]['VRADH']
+
+            scan_with_lowest_prf = min(scans, key=lambda x: x['prf_high'])  # find lowest value of the high prf
+            lowest_prf_scans = [scan for scan in scans if scan['prf_high'] == scan_with_lowest_prf['prf_high']]
+
+            if len(lowest_prf_scans) > 1:
+                time_between_scans = [abs(scans[hi]['dt_end'] - lprf_scan['dt_end']) for lprf_scan in lowest_prf_scans]
+                least_time = min(time_between_scans)
+                lti = time_between_scans.index(least_time)  # index of scan nearest in time to highest_unamb_velocity
+                lowest_prf_dataset = lowest_prf_scans[lti]['DBZH']
+            else:
+                lowest_prf_dataset = lowest_prf_scans[0]['DBZH']
+
+            # Update datasets
+            old = datasets[elevation][0]
+            datasets[elevation] = [{}]
+            datasets[elevation][0]['DBZH'] = lowest_prf_dataset
+            datasets[elevation][0]['VRADH'] = highest_unamb_velocity_dataset
+            datasets[elevation][0]['WRADH'] = highest_unamb_velocity_dataset
+            datasets[elevation][0]['prf_high'] = None
+            datasets[elevation][0]['prf_low'] = None
+            datasets[elevation][0]['dt_end'] = None
+            datasets[elevation][0].update({key: value for key, value in old.items() if key not in datasets[elevation][0]})
+
+            if 'DBZV' in datasets[elevation][0].keys():
+                datasets[elevation][0]['DBZV'] = lowest_prf_dataset
+
+    return datasets
+
+
+def calculate_unambiguous_velocities(wavelength, highprf, lowprf):
+    """
+    Calculates unambiguous velocity interval following Holleman & Beekhuis (2003).
+
+    Holleman, I., & Beekhuis, H. (2003). Analysis and correction of dual PRF velocity data.
+        Journal of Atmospheric and Oceanic Technology, 20(4), 443-453.
+
+    :param wavelength: wavelength in cm
+    :param highprf: highest prf of a scan
+    :param lowprf: lowest prf of a scan
+    :return: unambiguous velocity interval in m/s
+    """
+    wavelength = wavelength / 100
+    unamb_vel_high = (wavelength * highprf) / 4
+    unamb_vel_low = (wavelength * lowprf) / 4
+    dualprf_unamb_vel = (unamb_vel_high * unamb_vel_low) / (unamb_vel_high - unamb_vel_low)
+    return dualprf_unamb_vel
+
+
 def load_nexrad_file(file):
     raise NotImplementedError
 
@@ -445,9 +611,9 @@ if __name__ == "__main__":
 
     print('Files left to process: {}'.format(len(unprocessed_files)))
 
-    with Pool(processes=8) as pool:
+    with Pool(processes=2) as pool:
         pool.map(render_radar_file, unprocessed_files)
 
     end = time.time()
 
-    print('Generating {} rendered files took: {}'.format(len(unprocessed_files), end-start))
+    print('Generating {} rendered files took: {}'.format(len(unprocessed_files), end - start))
