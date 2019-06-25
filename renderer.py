@@ -3,11 +3,8 @@
 Renderer of weather radar data for MistNet CNN
 
 @TODO: Implement argparse interface
-@TODO: Implement check if dimensions of rendered and stacked files are correct
-@TODO: Implement graceful SIGTERM signals
 @TODO: Add logger
 @TODO: Add test suite
-
 """
 import datetime
 import os
@@ -61,15 +58,42 @@ class RadarRenderer:
             self.save_file(sp_data, dp_data)
 
     def load_odim_file(self, pvolfile):
+        """
+        Loads an ODIM formatted weather radar file.
+
+        :param pvolfile: path to ODIM formatted file
+        :return: ODIM formatted HDF5 file object
+        """
         return self.load_hdf5_file(pvolfile)
 
     def load_hdf5_file(self, pvolfile):
+        """
+        Loads an HDF5 weather radar file
+        :param pvolfile: path to HDF5 file
+        :return: HDF5 file object
+        """
         return h5py.File(pvolfile, 'r')
 
     def load_radar_volume(self, f):
+        """
+        Loads the radar volume into a dictionary of elevations, corresponding scans, radar products and attributes. Also
+        determines the country of the radar, useful to determine processing requirements for the radar data.
+
+        :param f: ODIM formatted HDF5 file object
+        :return: dictionary of radar file metadata, organized by elevations
+        """
         radar = dict()
 
         def format_attributes(attributes):
+            """
+            Converts attributes with bytestrings to normal strings and unpacks data stored in numpy arrays.
+
+            @NOTE: Probably needs significant changes to deal with NEXRAD radar data as more data is stored in
+                the HDF5 attributes.
+
+            :param attributes: dictionary of attributes
+            :return: re-formatted dictionary of attributes
+            """
             attrs = {k: v.decode('UTF-8') if isinstance(v, bytes) else v for k, v in attributes.items()}
             attrs = {k: v[0] if isinstance(v, np.ndarray) else v for k, v in attrs.items()}
             return attrs
@@ -141,9 +165,20 @@ class RadarRenderer:
         # Pick elevations closest to target elevations
         picked_elevs = [min(self.elevations, key=lambda x: abs(x - trg_elev)) for trg_elev in self.target_elevations]
         if len(set(picked_elevs)) < len(picked_elevs):
-            picked_elevs = self.pick_elevations_iteratively()
+            picked_elevs = self.pick_elevations_iteratively(self.target_elevations)
 
         def check_product_availability(products):
+            """
+            Checks if all required products in target_sp_products and target_dp_products exist within all scans in a
+            volume. If that is not the case, and these products cannot be computed based on other existing products,
+            it raises an exception.
+
+            NOTE: This will also throw an exception if single scans do not contain all the necessary products, but
+                combined they do. For now that should do.
+
+            :param products: dictionary keys of products in a scan
+            :return: True if all target products are present, raises an exception if not
+            """
             check_sp_products = all(product in products for product in self.target_sp_products)
             if not check_sp_products:
                 raise Exception('Some of the target single-pol products ({}) are missing at the elevations ({}) '
@@ -164,6 +199,8 @@ class RadarRenderer:
                 if 'RHOHV' not in products:
                     raise Exception('RHOHV is missing and cannot be computed at target elevation: {}.'.format(elev))
 
+            return True
+
         selected_data = {}
 
         for elev in picked_elevs:
@@ -174,8 +211,8 @@ class RadarRenderer:
                 # No exceptions were thrown, so we can assume all data is available in all scans at elevation elev
                 if combine_multiple_scans:
                     high_unamb_velocity, lowest_prf = self.pick_best_scans(self.radar[elev])
-                    selected_data[elev] = {'DBZH': lowest_prf, 'VRADH': high_unamb_velocity, 'WRADH': high_unamb_velocity,
-                                           'RHOHV': lowest_prf}
+                    selected_data[elev] = {'DBZH': lowest_prf, 'VRADH': high_unamb_velocity,
+                                           'WRADH': high_unamb_velocity, 'RHOHV': lowest_prf}
 
                     if 'DBZV' in self.target_dp_products:
                         selected_data[elev].update({'DBZV': lowest_prf})
@@ -194,6 +231,13 @@ class RadarRenderer:
         return selected_data
 
     def pick_elevations_iteratively(self, elevations):
+        """
+        Picks elevations iteratively rather than through a list comprehension, in case the latter method resulted in two
+        or more of the elevations are duplicates.
+
+        :param elevations: List of target elevations
+        :return: List of iteratively picked elevations closest to target elevations
+        """
         picked_elevs = []
         available_elevations = elevations
 
@@ -208,6 +252,15 @@ class RadarRenderer:
         return picked_elevs
 
     def pick_best_scans(self, scans):
+        """
+        Picks the best scans from multiple scans at the same elevation for different product types. The logic is as
+        follows: the scan with the highest unambiguous velocity will result in the most accurate data for VRADH and
+        WRADH, whereas the scan with the lowest pulse repetition frequency (PRF) has the longest range and is therefore
+        better suited for DBZH and DBZV.
+
+        :param scans: List of N dictionaries corresponding to N number of scans at a certain elevation
+        :return: index of the scan with the highest unambiguous velocity and the index of the scan with the lowest PRF
+        """
         unamb_velocity = [self.calculate_unambiguous_velocities(scan) for scan in scans]
         highest_unamb_velocity = max(unamb_velocity)
 
@@ -247,9 +300,7 @@ class RadarRenderer:
         Holleman, I., & Beekhuis, H. (2003). Analysis and correction of dual PRF velocity data.
             Journal of Atmospheric and Oceanic Technology, 20(4), 443-453.
 
-        :param wavelength: wavelength in cm
-        :param highprf: highest prf of a scan
-        :param lowprf: lowest prf of a scan
+        :param scan: dictionary of scan
         :return: unambiguous velocity interval in m/s
         """
         if 'wavelength' in self.radar.keys():
@@ -263,6 +314,11 @@ class RadarRenderer:
         return dualprf_unamb_vel
 
     def render_to_mistnet(self):
+        """
+        Render the radar volume, consisting of the scans at the target elevations, to the MistNet specifications.
+
+        :return: dictionary of interpolated (rendered) radar volume
+        """
         interpolated_volume = {}
 
         for elevation, products in self.selected_data.items():
@@ -299,14 +355,21 @@ class RadarRenderer:
         return interpolated_volume
 
     def parse_odim_data(self, elevation, product, index=None):
+        """
+        Parse raw data by correcting them with the calibration offset and gain values.
+
+        :param elevation: float of elevation angle
+        :param product: string of product name
+        :param index: index of scan to use if there are multiple scans at one elevation
+        :return: numpy array with the corrected data
+        """
         e, p, i = elevation, product, index
 
         if index is None:
             nan = np.logical_or(self.radar[e][p]['values'] == self.radar[e][p]['nodata'],
                                 self.radar[e][p]['values'] == self.radar[e][p]['undetect'])
 
-            corrected_data = self.radar[e][p]['values'] * self.radar[e][p]['gain'] + \
-                             self.radar[e][p]['offset']
+            corrected_data = self.radar[e][p]['values'] * self.radar[e][p]['gain'] + self.radar[e][p]['offset']
         else:
             nan = np.logical_or(self.radar[e][i][p]['values'] == self.radar[e][i][p]['nodata'],
                                 self.radar[e][i][p]['values'] == self.radar[e][i][p]['undetect'])
@@ -318,11 +381,26 @@ class RadarRenderer:
         return corrected_data
 
     def correct_with_reflectivity(self, reflectivity, product):
+        """
+        Correct product by setting cells of a product to NaN where the reflectivity is NaN.
+
+        :param reflectivity: numpy array of the reflectivity (DBZH) values
+        :param product: numpy array of the product values to be corrected
+        :return: numpy array of the reflectivity-corrected values
+        """
         reflectivity_nan = np.isnan(reflectivity)
         product[reflectivity_nan] = np.nan
         return product
 
     def interpolate_elevation(self, elevation, products, scan_index=None):
+        """
+        Interpolates the polar data to a regular grid for MistNet.
+
+        :param elevation: float of the elevation angle
+        :param products: dictionary of products
+        :param scan_index: dictionary with scan indices to use if more scans per elevation exist
+        :return: dictionary of interpolated products
+        """
         x = np.linspace(-self.range_max, self.range_max, self.pixel_dimensions)
         y = -x
         X, Y = np.meshgrid(x, y)
@@ -379,8 +457,9 @@ class RadarRenderer:
         """
         Generates 1D arrays containing azimuths in degrees and range values in meters for every rangebin along a ray
 
-        :param meta: radar metadata dictionary
-        :param dataset: dataset path in ODIM archive (dataset1, dataset2, etc.)
+        :param elevation: float of the elevation angle
+        :param product_name: string of the product name (e.g. DBZH)
+        :param scan_index: index of scan, applicable if there are multiple scans at one elevation
         :return: 1D array for azimuths in degrees and ranges in meters
         """
         if scan_index[product_name] is None:
@@ -395,12 +474,19 @@ class RadarRenderer:
 
         return az, r
 
-    def stack_interpolated_elevations(self, interpolated_elevations):
+    def stack_interpolated_elevations(self, interpolated_volume):
+        """
+        Stacks the interpolated elevations to the format expected by the MistNet model, which - as of writing - is a
+        15x608x608 numpy array containing for DBZH, VRADH and WRADH and a 10x608x608 numpy array for RHOHV and ZDR.
+
+        :param interpolated_volume: dictionary of interpolated volume organized by elevation angle
+        :return: numpy arrays of stacked single-pol and dual-pol products
+        """
         # Determine size of final numpy array
-        first_dataset = next(iter(interpolated_elevations))
-        nr_elevations = len(interpolated_elevations)
-        sp_products = [data for data in self.target_sp_products if data in interpolated_elevations[first_dataset]]
-        dp_products = [data for data in self.target_dp_products if data in interpolated_elevations[first_dataset]]
+        first_dataset = next(iter(interpolated_volume))
+        nr_elevations = len(interpolated_volume)
+        sp_products = [data for data in self.target_sp_products if data in interpolated_volume[first_dataset]]
+        dp_products = [data for data in self.target_dp_products if data in interpolated_volume[first_dataset]]
         first_dim_sp = nr_elevations * len(sp_products)
         first_dim_dp = nr_elevations * len(dp_products)
 
@@ -413,20 +499,26 @@ class RadarRenderer:
         # Fill single-pol array
         i = 0
         for product in sp_products:
-            for elevation in interpolated_elevations:
-                sp_data[i, :, :] = interpolated_elevations[elevation][product]
+            for elevation in interpolated_volume:
+                sp_data[i, :, :] = interpolated_volume[elevation][product]
                 i += 1
 
         # Fill dual-pol array
         i = 0
         for product in dp_products:
-            for elevation in interpolated_elevations:
-                dp_data[i, :, :] = interpolated_elevations[elevation][product]
+            for elevation in interpolated_volume:
+                dp_data[i, :, :] = interpolated_volume[elevation][product]
                 i += 1
 
         return sp_data, dp_data
 
     def save_file(self, rdata, dp):
+        """
+        Save stacked single-pol and dual-pol products to the format expected by the MistNet model.
+
+        :param rdata: numpy array of stacked single-pol data
+        :param dp: numpy array of stacked dual-pol data
+        """
         if self.output_file.suffix == '.mat':
             io.savemat(self.output_file, {'rdata': rdata, 'dp': dp})
         elif self.output_file.suffix == '.npz':
