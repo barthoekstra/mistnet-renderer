@@ -10,6 +10,9 @@ import datetime
 import os
 import pathlib
 import json
+import argparse
+import time
+import multiprocessing as mp
 
 import numpy as np
 import h5py
@@ -17,7 +20,6 @@ from scipy import interpolate, io
 
 
 class RadarRenderer:
-
     # MistNet Model Parameters
     range_max = 150000  # in meters
     pixel_dimensions = 600  # width and height of interpolated image in pixels
@@ -25,7 +27,16 @@ class RadarRenderer:
 
     # Radar metadata
     odim_radar_db = None
-    correct_products = {'Germany': ['RHOHV'], 'Netherlands': [], 'United States': []}
+    correct_products = {
+        'Germany': ['RHOHV'],
+        'Netherlands': [],
+        'United States': []
+    }
+    standard_target_elevations = {
+        'Germany': [0.5, 1.5, 2.5, 3.5, 4.5],
+        'Netherlands': [0.3, 1.2, 2.0, 2.7, 4.5],
+        'United States': [0.5, 1.5, 2.5, 3.5, 4.5]
+    }
 
     def __init__(self, pvolfile, **kwargs):
         self.pvolfile = pathlib.Path(pvolfile).resolve()
@@ -37,7 +48,7 @@ class RadarRenderer:
 
         self.radar_format = kwargs.get('radar_format', None)
         self.elevations = set()
-        self.target_elevations = kwargs.get('target_elevations', [0.5, 1.5, 2.5, 3.5, 4.5])
+        self.target_elevations = kwargs.get('target_elevations', None)
         self.skipped_scans = kwargs.get('skipped_scans', [])
         self.target_sp_products = kwargs.get('target_sp_products', ['DBZH', 'VRADH', 'WRADH'])
         self.target_dp_products = kwargs.get('target_dp_products', ['RHOHV', 'ZDR'])
@@ -52,6 +63,10 @@ class RadarRenderer:
 
             self._f = self.load_odim_file(self.pvolfile)
             self.radar = self.load_radar_volume(self._f)
+
+            if self.target_elevations is None:
+                self.target_elevations = self.standard_target_elevations[self.radar['country']]
+
             self.selected_data = self.select_datasets_odim()
             self.render = self.render_to_mistnet()
             sp_data, dp_data = self.stack_interpolated_elevations(self.render)
@@ -159,7 +174,7 @@ class RadarRenderer:
         """
         # Check if there are enough elevations in the radar volume
         if len(self.elevations) < len(self.target_elevations):
-            raise Exception('Number of available elevations ({}) is lower than the number of target elevations({}).'
+            raise Exception('Number of available elevations ({}) is lower than the number of target elevations ({}).'
                             .format(len(self.elevations), len(self.target_elevations)))
 
         # Pick elevations closest to target elevations
@@ -269,7 +284,7 @@ class RadarRenderer:
             raise Exception(
                 'Two or more scans at elevation {} share the same unambiguous velocity. Add one of the scans to '
                 'skipped_scans, so only a single scan can be selected based on the highest unambiguous velocity'
-                .format(round(scans[0]['elangle'], 2))
+                    .format(round(scans[0]['elangle'], 2))
             )
 
         huvi = unamb_velocity.index(highest_unamb_velocity)  # index of scan with highest unambiguous velocity
@@ -528,6 +543,64 @@ class RadarRenderer:
 
 
 if __name__ == "__main__":
-    r = RadarRenderer('data/raw/mvol_201503200100_10557.h5', output_file='data/processed/mvol_201503200100_RW.mat')
-    # r = RadarRenderer('data/raw/NLHRW_pvol_20181020T2210_NL52.h5', target_elevations=[0.3, 1.2, 2.0, 2.7, 4.5],
-    #                   output_file='data/processed/NLHRW_20181020T2210_RW.mat')
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('input', help='Path to input file or folder. If given a folder, all files within are '
+                                      'processed.', type=str)
+    parser.add_argument('output', help='Path to output file or folder. If given a folder, all processed files are '
+                                       'stored there.', type=str)
+    parser.add_argument('-e', '-elevations', nargs=5, help='Five numbers separated by a space indicating the target'
+                                                           'elevations to render to MistNet. Works only when a single'
+                                                           'file is to be processed.', type=float)
+    parser.add_argument('-t', '-type', help='Output file types.', choices=['numpy', 'matlab'], type=str, default='npz')
+    parser.add_argument('-c', '-cores', help='Cores to use for parallel processing. Defaults to number of available'
+                                             'cores minus 2.', choices=range(1, mp.cpu_count()+1),
+                        default=mp.cpu_count() - 2, type=int)
+    args = parser.parse_args()
+
+    input_path = pathlib.Path(args.input).resolve()
+    output_path = pathlib.Path(args.output).resolve()
+
+    if input_path.is_file() and output_path.is_file():
+        RadarRenderer(input_path, output_file=output_path, target_elevations=args.e, output_type=args.t)
+
+    elif input_path.is_file() and output_path.is_dir():
+        output_file = pathlib.Path(output_path.as_posix() + '/' + input_path.stem + '.' + args.t)
+        RadarRenderer(input_path, output_file=output_file, target_elevations=args.e)
+
+    elif input_path.is_dir() and output_path.is_file():
+        print('Output location should be a folder. Exiting now.')
+    else:
+        # Apparently both input and output are folders
+        start = time.time()
+
+        rendered_files = []
+        raw_files = []
+
+        for file in output_path.glob('*'):
+            if file.suffix == '.npz' or file.suffix == '.mat':
+                rendered_files.append(file.stem)
+
+        for file in input_path.glob('*'):
+            if file.suffix == '.h5':
+                raw_files.append(file)
+
+        unprocessed_files = [file for file in raw_files if file.stem not in rendered_files]
+
+        print('Files left to process: {}'.format(len(unprocessed_files)))
+
+
+        def render_radar_file(file):
+            output_file = pathlib.Path(output_path.as_posix() + '/' + file.stem + '.' + args.t)
+            try:
+                RadarRenderer(file, output_file=output_file, target_elevations=args.e)
+            except Exception as e:
+                print('Problem encountered while processing {}: {}'.format(file.stem, e))
+
+
+        with mp.Pool(processes=args.c) as pool:
+            pool.map(render_radar_file, unprocessed_files)
+
+        end = time.time()
+
+        print('Processed {} files in {} seconds.'.format(len(unprocessed_files), end - start))
