@@ -2,10 +2,10 @@
 """
 Renderer of weather radar data for MistNet CNN
 
-@TODO: Implement argparse interface
 @TODO: Add logger
 @TODO: Add test suite
 """
+
 import datetime
 import os
 import pathlib
@@ -552,7 +552,7 @@ if __name__ == "__main__":
     parser.add_argument('-e', '-elevations', nargs=5, help='Five numbers separated by a space indicating the target'
                                                            'elevations to render to MistNet. Works only when a single'
                                                            'file is to be processed.', type=float)
-    parser.add_argument('-t', '-type', help='Output file types.', choices=['numpy', 'matlab'], type=str, default='npz')
+    parser.add_argument('-t', '-type', help='Output file types.', choices=['npz', 'mat'], type=str, default='npz')
     parser.add_argument('-c', '-cores', help='Cores to use for parallel processing. Defaults to number of available'
                                              'cores minus 2.', choices=range(1, mp.cpu_count()+1),
                         default=mp.cpu_count() - 2, type=int)
@@ -578,7 +578,7 @@ if __name__ == "__main__":
         raw_files = []
 
         for file in output_path.glob('*'):
-            if file.suffix == '.npz' or file.suffix == '.mat':
+            if file.suffix == '.' + args.t:
                 rendered_files.append(file.stem)
 
         for file in input_path.glob('*'):
