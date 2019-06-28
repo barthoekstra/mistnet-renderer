@@ -3,7 +3,6 @@
 Renderer of weather radar data for MistNet CNN
 
 @TODO: Add logger
-@TODO: Add test suite
 """
 
 import datetime
@@ -37,6 +36,16 @@ class RadarRenderer:
         'Netherlands': [0.3, 1.2, 2.0, 2.7, 4.5],
         'United States': [0.5, 1.5, 2.5, 3.5, 4.5]
     }
+    standard_target_sp_products = {
+        'Germany': ['DBZH', 'VRADH', 'WRADH'],
+        'Netherlands': ['DBZH', 'VRADH', 'WRADH'],
+        'United States': ['DBZH', 'VRADH', 'WRADH']
+    }
+    standard_target_dp_products = {
+        'Germany': ['RHOHV', 'ZDR'],
+        'Netherlands': ['RHOHV', 'ZDR'],
+        'United States': []
+    }
 
     def __init__(self, pvolfile, **kwargs):
         self.pvolfile = pathlib.Path(pvolfile).resolve()
@@ -50,8 +59,10 @@ class RadarRenderer:
         self.elevations = set()
         self.target_elevations = kwargs.get('target_elevations', None)
         self.skipped_scans = kwargs.get('skipped_scans', [])
-        self.target_sp_products = kwargs.get('target_sp_products', ['DBZH', 'VRADH', 'WRADH'])
-        self.target_dp_products = kwargs.get('target_dp_products', ['RHOHV', 'ZDR'])
+        self.target_sp_products = kwargs.get('target_sp_products', None)
+        self.target_dp_products = kwargs.get('target_dp_products', None)
+        self.skip_render = kwargs.get('skip_render', False)
+        self.skip_save = kwargs.get('skip_save', False)
 
         if self.pvolfile.suffix == '.h5' or self.radar_format == 'ODIM':
             # We assume the file is ODIM formatted
@@ -67,10 +78,20 @@ class RadarRenderer:
             if self.target_elevations is None:
                 self.target_elevations = self.standard_target_elevations[self.radar['country']]
 
+            if self.target_sp_products is None:
+                self.target_sp_products = self.standard_target_sp_products[self.radar['country']]
+
+            if self.target_dp_products is None:
+                self.target_dp_products = self.standard_target_dp_products[self.radar['country']]
+
             self.selected_data = self.select_datasets_odim()
-            self.render = self.render_to_mistnet()
-            sp_data, dp_data = self.stack_interpolated_elevations(self.render)
-            self.save_file(sp_data, dp_data)
+
+            if not self.skip_render:
+                self.render = self.render_to_mistnet()
+                self.sp_data, self.dp_data = self.stack_interpolated_elevations(self.render)
+
+                if not self.skip_save:
+                    self.save_file(self.sp_data, self.dp_data)
 
     def load_odim_file(self, pvolfile):
         """
@@ -173,7 +194,7 @@ class RadarRenderer:
             elevation and no 'best scan' exists.
         """
         # Check if there are enough elevations in the radar volume
-        if len(self.elevations) < len(self.target_elevations):
+        if len(self.elevations) < len(set(self.target_elevations)):
             raise Exception('Number of available elevations ({}) is lower than the number of target elevations ({}).'
                             .format(len(self.elevations), len(self.target_elevations)))
 
@@ -182,46 +203,12 @@ class RadarRenderer:
         if len(set(picked_elevs)) < len(picked_elevs):
             picked_elevs = self.pick_elevations_iteratively(self.target_elevations)
 
-        def check_product_availability(products):
-            """
-            Checks if all required products in target_sp_products and target_dp_products exist within all scans in a
-            volume. If that is not the case, and these products cannot be computed based on other existing products,
-            it raises an exception.
-
-            NOTE: This will also throw an exception if single scans do not contain all the necessary products, but
-                combined they do. For now that should do.
-
-            :param products: dictionary keys of products in a scan
-            :return: True if all target products are present, raises an exception if not
-            """
-            check_sp_products = all(product in products for product in self.target_sp_products)
-            if not check_sp_products:
-                raise Exception('Some of the target single-pol products ({}) are missing at the elevations ({}) '
-                                'closest to the target elevations ({}).'
-                                .format(self.target_sp_products, picked_elevs, self.target_elevations))
-
-            check_dp_products = all(product in products for product in self.target_dp_products)
-            if not check_dp_products:
-                # Check if we can derive dual-pol products from existing products
-                if 'ZDR' not in products:
-                    if 'DBZH' not in products or 'DBZV' not in products:
-                        raise Exception('ZDR is missing and cannot be computed at target elevation: {}.'
-                                        .format(elev))
-                    else:
-                        self.target_dp_products.extend(['DBZH', 'DBZV'])
-                        self.target_dp_products = list(set(self.target_dp_products))
-
-                if 'RHOHV' not in products:
-                    raise Exception('RHOHV is missing and cannot be computed at target elevation: {}.'.format(elev))
-
-            return True
-
         selected_data = {}
 
         for elev in picked_elevs:
             if isinstance(self.radar[elev], list):
                 for scan in self.radar[elev]:
-                    check_product_availability(scan.keys())
+                    self.check_product_availability(scan.keys(), picked_elevs, elev)
 
                 # No exceptions were thrown, so we can assume all data is available in all scans at elevation elev
                 if combine_multiple_scans:
@@ -237,11 +224,12 @@ class RadarRenderer:
                     selected_data[elev] = {product: 0 for product in self.target_sp_products}
                     selected_data[elev].update({product: 0 for product in self.target_dp_products})
             else:
-                check_product_availability(self.radar[elev].keys())
+                self.check_product_availability(self.radar[elev].keys(), picked_elevs, elev)
                 selected_data[elev] = {product: None for product in self.target_sp_products}
                 selected_data[elev].update({product: None for product in self.target_dp_products})
-                if 'DBZV' in self.target_dp_products:
-                    selected_data[elev].pop('ZDR')
+
+                # # if 'DBZV' in self.target_dp_products:
+                #     selected_data[elev].pop('ZDR')
 
         return selected_data
 
@@ -264,7 +252,63 @@ class RadarRenderer:
             picked_elevs.append(picked_elev)
             available_elevations.remove(picked_elev)
 
-        return picked_elevs
+        return sorted(picked_elevs)
+
+    def check_product_availability(self, products, picked_elevs, elev):
+        """
+        Checks if all required products in target_sp_products and target_dp_products exist within all scans in a
+        volume. If that is not the case, and these products cannot be computed based on other existing products,
+        it raises an exception.
+
+        NOTE: This will also throw an exception if single scans do not contain all the necessary products, but
+            combined they do. For now that should do.
+
+        :param products: dictionary keys of products in a scan
+        :param picked_elevs: list of picked elevations
+        :paral elev: float of current elevation
+        :return: True if all target products are present, raises an exception if not
+        """
+        check_sp_products = all(product in products for product in self.target_sp_products)
+        if not check_sp_products:
+            raise Exception('Some of the target single-pol products ({}) are missing at the elevations ({}) '
+                            'closest to the target elevations ({}).'
+                            .format(self.target_sp_products, picked_elevs, self.target_elevations))
+
+        check_dp_products = all(product in products for product in self.target_dp_products)
+        if not check_dp_products:
+            # Check if we can derive dual-pol products from existing products
+            if 'ZDR' in self.target_dp_products and 'ZDR' not in products:
+                if 'DBZH' not in products or 'DBZV' not in products:
+                    raise Exception('ZDR is missing and cannot be computed at target elevation: {}.'
+                                    .format(elev))
+                else:
+                    self.target_dp_products.extend(['DBZH', 'DBZV'])
+
+                    try:
+                        self.target_dp_products.remove('ZDR')
+                    except ValueError:
+                        pass
+
+                    self.target_dp_products = list(set(self.target_dp_products))
+
+            if 'RHOHV' in self.target_dp_products and 'RHOHV' not in products:
+                raise Exception('RHOHV is missing and cannot be computed at target elevation: {}.'.format(elev))
+
+            targets_dp = self.target_dp_products
+            try:
+                remove_values = ['ZDR', 'DBZH', 'DBZV', 'RHOHV']
+                for value in remove_values:
+                    targets_dp.remove(value)
+            except ValueError:
+                pass
+
+            check_dp_products = all(product in products for product in targets_dp)
+            if not check_dp_products:
+                raise Exception('Some of the target-dual-pol products ({}) are missing at the elevations ({}) '
+                                'closest to the target elevations ({}).'
+                                .format(self.target_dp_products, picked_elevs, self.target_elevations))
+            else:
+                return
 
     def pick_best_scans(self, scans):
         """
@@ -292,6 +336,7 @@ class RadarRenderer:
         lowest_prf = min(scans, key=lambda x: x['highprf'])  # find lowest value of high prf
         lowest_prf_scans = [scan for scan in scans if scan['highprf'] == lowest_prf['highprf']]
 
+        lti = 0
         if len(lowest_prf_scans) > 1:
             """
             Apparently there are multiple scans with the same lowest value for the highprf, so we pick the one that is 
@@ -366,6 +411,7 @@ class RadarRenderer:
         if 'DBZV' in self.target_dp_products:
             self.target_dp_products.remove('DBZH')
             self.target_dp_products.remove('DBZV')
+            self.target_dp_products.append('ZDR')
 
         return interpolated_volume
 
@@ -500,8 +546,8 @@ class RadarRenderer:
         # Determine size of final numpy array
         first_dataset = next(iter(interpolated_volume))
         nr_elevations = len(interpolated_volume)
-        sp_products = [data for data in self.target_sp_products if data in interpolated_volume[first_dataset]]
-        dp_products = [data for data in self.target_dp_products if data in interpolated_volume[first_dataset]]
+        sp_products = [data for data in self.target_sp_products if data in interpolated_volume[first_dataset].keys()]
+        dp_products = [data for data in self.target_dp_products if data in interpolated_volume[first_dataset].keys()]
         first_dim_sp = nr_elevations * len(sp_products)
         first_dim_dp = nr_elevations * len(dp_products)
 
