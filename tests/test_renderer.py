@@ -79,15 +79,21 @@ def test_renderer_select_data_odim_too_many_target_elevations(renderer):
 
 
 def test_renderer_pick_elevations_iteratively_lower(renderer):
-    elevations = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 8.0, 12.0, 17.0, 25.0]
-    renderer.target_elevations = [0.1, 0.2, 0.3, 2.5, 3.5]
-    assert renderer.pick_elevations_iteratively(elevations) == [0.5, 1.5, 2.5, 3.5, 4.5]
+    renderer.elevations = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 8.0, 12.0, 17.0, 25.0]
+    target_elevations = [0.1, 0.2, 0.3, 2.5, 3.5]
+    assert renderer.pick_elevations_iteratively(target_elevations) == [0.5, 1.5, 2.5, 3.5, 4.5]
 
 
 def test_renderer_pick_elevations_iteratively_higher(renderer):
-    elevations = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 8.0, 12.0, 17.0, 25.0]
-    renderer.target_elevations = [0.3, 2.5, 3.5, 30.0, 60.0, 90.0]
-    assert renderer.pick_elevations_iteratively(elevations) == [0.5, 2.5, 3.5, 12.0, 17.0, 25.0]
+        renderer.elevations = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 8.0, 12.0, 17.0, 25.0]
+        target_elevations = [0.3, 2.5, 3.5, 30.0, 60.0, 90.0]
+        assert renderer.pick_elevations_iteratively(target_elevations) == [0.5, 2.5, 3.5, 12.0, 17.0, 25.0]
+
+
+def test_renderer_elevations_too_spread_out(renderer):
+    with pytest.raises(RadarException):
+        renderer.elevations = [0.5, 1.5, 2.5, 3.5, 15.0, 17.0, 25.0]
+        renderer.select_datasets_odim()
 
 
 def test_renderer_select_data_odim_no_target_sp_products(renderer):

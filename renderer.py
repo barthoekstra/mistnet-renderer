@@ -23,6 +23,7 @@ class RadarRenderer:
     range_max = 150000  # in meters
     pixel_dimensions = 600  # width and height of interpolated image in pixels
     padding = 4  # number of pixels to pad interpolated image with on all sides (for the convolutions)
+    max_elevation_spread = 6  # maximum difference in degrees between lowest and highest elevation
 
     # Radar metadata
     odim_radar_db = None
@@ -205,6 +206,11 @@ class RadarRenderer:
         if len(set(picked_elevs)) < len(picked_elevs):
             picked_elevs = self.pick_elevations_iteratively(self.target_elevations)
 
+        if max(picked_elevs) - min(picked_elevs) > self.max_elevation_spread:
+            raise RadarException('Difference (in degrees) between lowest ({}) and highest picked elevation ({}) larger '
+                                 'than maximum allowed value: {}.'
+                                 .format(min(picked_elevs), max(picked_elevs), self.max_elevation_spread))
+
         selected_data = {}
 
         for elev in picked_elevs:
@@ -230,24 +236,21 @@ class RadarRenderer:
                 selected_data[elev] = {product: None for product in self.target_sp_products}
                 selected_data[elev].update({product: None for product in self.target_dp_products})
 
-                # # if 'DBZV' in self.target_dp_products:
-                #     selected_data[elev].pop('ZDR')
-
         return selected_data
 
-    def pick_elevations_iteratively(self, elevations):
+    def pick_elevations_iteratively(self, target_elevations):
         """
         Picks elevations iteratively rather than through a list comprehension, in case the latter method resulted in two
         or more of the elevations are duplicates.
 
-        :param elevations: List of target elevations
+        :param target_elevations: List of target elevations
         :return: List of iteratively picked elevations closest to target elevations
         """
         picked_elevs = []
-        available_elevations = elevations
+        available_elevations = self.elevations
 
-        for trg_elev in self.target_elevations:
-            if len(available_elevations) == 0:
+        for trg_elev in target_elevations:
+            if len(picked_elevs) == len(target_elevations):
                 break
 
             picked_elev = min(available_elevations, key=lambda x: abs(x - trg_elev))
@@ -645,7 +648,7 @@ if __name__ == "__main__":
             output_file = pathlib.Path(output_path.as_posix() + '/' + file.stem + '.' + args.t)
             try:
                 RadarRenderer(file, output_file=output_file, target_elevations=args.e)
-            except RadarException as e:
+            except (RadarException, OSError) as e:
                 print('Problem encountered while processing {}: {}'.format(file.stem, e))
 
 
