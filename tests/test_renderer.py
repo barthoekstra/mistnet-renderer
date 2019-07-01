@@ -68,12 +68,12 @@ def test_renderer_select_data_odim_output(renderer):
 
 
 def test_incomplete_volume():
-    with pytest.raises(Exception):
+    with pytest.raises(RadarException):
         RadarRenderer('tests/data/germany_incomplete.h5', skip_render=True)
 
 
 def test_renderer_select_data_odim_too_many_target_elevations(renderer):
-    with pytest.raises(Exception):
+    with pytest.raises(RadarException):
         renderer.target_elevations = list(range(5000))
         renderer.select_datasets_odim()
 
@@ -91,13 +91,13 @@ def test_renderer_pick_elevations_iteratively_higher(renderer):
 
 
 def test_renderer_select_data_odim_no_target_sp_products(renderer):
-    with pytest.raises(Exception):
+    with pytest.raises(RadarException):
         renderer.target_sp_products = ['FooBar']
         renderer.select_datasets_odim()
 
 
 def test_renderer_select_data_odim_no_target_dp_products(renderer):
-    with pytest.raises(Exception):
+    with pytest.raises(RadarException):
         renderer.target_dp_products = ['FooBar']
         renderer.select_datasets_odim()
 
@@ -106,7 +106,7 @@ def test_renderer_select_data_odim_no_rhohv_product(renderer):
     for elevation in renderer.elevations:
         renderer.radar[elevation].pop('RHOHV', None)
 
-    with pytest.raises(Exception):
+    with pytest.raises(RadarException):
         renderer.select_datasets_odim()
 
 
@@ -122,7 +122,7 @@ def test_renderer_select_data_odim_no_zdr_computed_product(renderer):
         renderer.radar[elevation].pop('ZDR', None)
         renderer.radar[elevation].pop('DBZV', None)
 
-    with pytest.raises(Exception):
+    with pytest.raises(RadarException):
         renderer.select_datasets_odim()
 
 

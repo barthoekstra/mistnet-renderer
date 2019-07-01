@@ -195,8 +195,8 @@ class RadarRenderer:
         """
         # Check if there are enough elevations in the radar volume
         if len(self.elevations) < len(set(self.target_elevations)):
-            raise Exception('Number of available elevations ({}) is lower than the number of target elevations ({}).'
-                            .format(len(self.elevations), len(self.target_elevations)))
+            raise RadarException('Number of available elevations ({}) is lower than the number of target elevations '
+                                 '({}).'.format(len(self.elevations), len(self.target_elevations)))
 
         # Pick elevations closest to target elevations
         picked_elevs = [min(self.elevations, key=lambda x: abs(x - trg_elev)) for trg_elev in self.target_elevations]
@@ -270,17 +270,16 @@ class RadarRenderer:
         """
         check_sp_products = all(product in products for product in self.target_sp_products)
         if not check_sp_products:
-            raise Exception('Some of the target single-pol products ({}) are missing at the elevations ({}) '
-                            'closest to the target elevations ({}).'
-                            .format(self.target_sp_products, picked_elevs, self.target_elevations))
+            raise RadarException('Some of the target single-pol products ({}) are missing at the elevations ({}) '
+                                 'closest to the target elevations ({}).'
+                                 .format(self.target_sp_products, picked_elevs, self.target_elevations))
 
         check_dp_products = all(product in products for product in self.target_dp_products)
         if not check_dp_products:
             # Check if we can derive dual-pol products from existing products
             if 'ZDR' in self.target_dp_products and 'ZDR' not in products:
                 if 'DBZH' not in products or 'DBZV' not in products:
-                    raise Exception('ZDR is missing and cannot be computed at target elevation: {}.'
-                                    .format(elev))
+                    raise RadarException('ZDR is missing and cannot be computed at target elevation: {}.'.format(elev))
                 else:
                     self.target_dp_products.extend(['DBZH', 'DBZV'])
 
@@ -292,7 +291,7 @@ class RadarRenderer:
                     self.target_dp_products = list(set(self.target_dp_products))
 
             if 'RHOHV' in self.target_dp_products and 'RHOHV' not in products:
-                raise Exception('RHOHV is missing and cannot be computed at target elevation: {}.'.format(elev))
+                raise RadarException('RHOHV is missing and cannot be computed at target elevation: {}.'.format(elev))
 
             targets_dp = self.target_dp_products
             try:
@@ -304,9 +303,9 @@ class RadarRenderer:
 
             check_dp_products = all(product in products for product in targets_dp)
             if not check_dp_products:
-                raise Exception('Some of the target-dual-pol products ({}) are missing at the elevations ({}) '
-                                'closest to the target elevations ({}).'
-                                .format(self.target_dp_products, picked_elevs, self.target_elevations))
+                raise RadarException('Some of the target-dual-pol products ({}) are missing at the elevations ({}) '
+                                     'closest to the target elevations ({}).'
+                                     .format(self.target_dp_products, picked_elevs, self.target_elevations))
             else:
                 return
 
@@ -325,7 +324,7 @@ class RadarRenderer:
 
         # Check if 2 or more scans have the same highest value of the unambiguous velocity
         if unamb_velocity.count(highest_unamb_velocity) > 1:
-            raise Exception(
+            raise RadarException(
                 'Two or more scans at elevation {} share the same unambiguous velocity. Add one of the scans to '
                 'skipped_scans, so only a single scan can be selected based on the highest unambiguous velocity'
                     .format(round(scans[0]['elangle'], 2))
@@ -588,6 +587,10 @@ class RadarRenderer:
         print('Processed: {}'.format(self.pvolfile.name))
 
 
+class RadarException(Exception):
+    pass
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -640,7 +643,7 @@ if __name__ == "__main__":
             output_file = pathlib.Path(output_path.as_posix() + '/' + file.stem + '.' + args.t)
             try:
                 RadarRenderer(file, output_file=output_file, target_elevations=args.e)
-            except Exception as e:
+            except RadarException as e:
                 print('Problem encountered while processing {}: {}'.format(file.stem, e))
 
 
