@@ -170,14 +170,13 @@ class RadarRenderer:
         source = dict(pair.split(':') for pair in radar['source'].split(','))
         try:
             if 'NOD' in source.keys():
-                radar['country'] = [radar['country'].strip() for radar in self.odim_radar_db if
-                                    radar['odimcode'].strip() == source['NOD']]
-
-                if isinstance(radar['country'], list):
-                    radar['country'] = radar['country'][0]
+                country = [radar['country'].strip() for radar in self.odim_radar_db if
+                           radar['odimcode'].strip() == source['NOD']]
+                radar['country'] = country[0]
             else:
-                radar['country'] = [radar['country'].strip() for radar in self.odim_radar_db if
-                                    radar['wmocode'].strip() == source['WMO']][0]
+                country = [radar['country'].strip() for radar in self.odim_radar_db if
+                           radar['wmocode'].strip() == source['WMO']]
+                radar['country'] = country[0]
         except KeyError:
             # We are probably dealing with an ODIM conversion of a NEXRAD file, which lacks the NOD and WMO codes
             radar['country'] = 'United States'
