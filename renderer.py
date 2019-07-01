@@ -171,7 +171,10 @@ class RadarRenderer:
         try:
             if 'NOD' in source.keys():
                 radar['country'] = [radar['country'].strip() for radar in self.odim_radar_db if
-                                    radar['odimcode'].strip() == source['NOD']][0]
+                                    radar['odimcode'].strip() == source['NOD']]
+
+                if isinstance(radar['country'], list):
+                    radar['country'] = radar['country'][0]
             else:
                 radar['country'] = [radar['country'].strip() for radar in self.odim_radar_db if
                                     radar['wmocode'].strip() == source['WMO']][0]
