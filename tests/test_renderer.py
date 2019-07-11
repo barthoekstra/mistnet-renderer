@@ -3,32 +3,38 @@ import warnings
 from renderer import *
 
 
-@pytest.fixture()
-def renderer_output_germany():
-    yield RadarRenderer('tests/data/germany.h5', skip_save=True)
-
-
-# For some reason this test is not isolated enough if at the bottom of the test suite, but it should be able to pass if
-# it is at the top. Not sure what is going on, but not a priority to fix.
-def test_renderer_output_germany(renderer_output_germany):
-    reference_germany = np.load('tests/data/germany.npz')
-    assert np.allclose(renderer_output_germany.sp_data, reference_germany['rdata'], equal_nan=True)
-    assert np.allclose(renderer_output_germany.dp_data, reference_germany['dp'], equal_nan=True)
-
-
-@pytest.fixture()
+@pytest.fixture(scope='function')
 def renderer():
     yield RadarRenderer('tests/data/germany.h5', skip_render=True)
 
 
-@pytest.fixture()
-def renderer_germany_incomplete():
-    yield RadarRenderer('tests/data/germany_incomplete.h5', skip_render=True)
-
-
-@pytest.fixture()
+@pytest.fixture(scope='function')
 def renderer_netherlands():
     yield RadarRenderer('tests/data/netherlands.h5', skip_render=True)
+
+
+@pytest.fixture(scope='function')
+def renderer_output_germany():
+    yield RadarRenderer('tests/data/germany.h5', skip_save=True)
+
+
+@pytest.fixture(scope='function')
+def renderer_output_us():
+    yield RadarRenderer('tests/data/us.h5', skip_save=True)
+
+
+@pytest.fixture(scope='function')
+def renderer_output_netherlands():
+    yield RadarRenderer('tests/data/netherlands.h5', skip_save=True)
+
+
+def test_renderer_select_data_odim_no_zdr_computed_product(renderer):
+    for elevation in renderer.elevations:
+        renderer.radar[elevation].pop('ZDR', None)
+        renderer.radar[elevation].pop('DBZV', None)
+
+    with pytest.raises(RadarException):
+        renderer.select_datasets_odim()
 
 
 def test_renderer_setup(renderer):
@@ -85,12 +91,14 @@ def test_renderer_pick_elevations_iteratively_lower(renderer):
 
 
 def test_renderer_pick_elevations_iteratively_higher(renderer):
-        renderer.elevations = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 8.0, 12.0, 17.0, 25.0]
-        target_elevations = [0.3, 2.5, 3.5, 30.0, 60.0, 90.0]
-        assert renderer.pick_elevations_iteratively(target_elevations) == [0.5, 2.5, 3.5, 12.0, 17.0, 25.0]
+    renderer.elevations = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 8.0, 12.0, 17.0, 25.0]
+    target_elevations = [0.3, 2.5, 3.5, 30.0, 60.0, 90.0]
+    assert renderer.pick_elevations_iteratively(target_elevations) == [0.5, 2.5, 3.5, 12.0, 17.0, 25.0]
 
 
 def test_renderer_elevations_too_spread_out(renderer):
+    renderer = RadarRenderer('tests/data/germany.h5', skip_render=True)
+
     with pytest.raises(RadarException):
         renderer.elevations = [0.5, 1.5, 2.5, 3.5, 15.0, 17.0, 25.0]
         renderer.select_datasets_odim()
@@ -120,16 +128,10 @@ def test_renderer_select_data_odim_no_zdr_product(renderer):
     for elevation in renderer.elevations:
         renderer.radar[elevation].pop('ZDR', None)
 
-    renderer.select_datasets_odim()
+    selected_data = renderer.select_datasets_odim()
 
-
-def test_renderer_select_data_odim_no_zdr_computed_product(renderer):
-    for elevation in renderer.elevations:
-        renderer.radar[elevation].pop('ZDR', None)
-        renderer.radar[elevation].pop('DBZV', None)
-
-    with pytest.raises(RadarException):
-        renderer.select_datasets_odim()
+    for elevation in selected_data.keys():
+        assert 'DBZV' in selected_data[elevation].keys()
 
 
 def test_unambiguous_velocities(renderer):
@@ -172,12 +174,12 @@ def test_correct_with_reflectivity(renderer_netherlands):
                        equal_nan=True)
 
 
-
-
-
-@pytest.fixture()
-def renderer_output_us():
-    yield RadarRenderer('tests/data/us.h5', skip_save=True)
+def test_renderer_output_germany(renderer_output_germany):
+    reference_germany = np.load('tests/data/germany.npz')
+    reference_germany_dpr = np.load('tests/data/germany-dpr-only.npz')
+    assert np.allclose(renderer_output_germany.sp_data, reference_germany['rdata'], equal_nan=True)
+    assert np.allclose(renderer_output_germany.dp_data[0:10, :, :], reference_germany['dp'][0:10, :, :], equal_nan=True)
+    assert np.allclose(renderer_output_germany.dp_data[10:15, :, :], reference_germany_dpr['dp'], equal_nan=True)
 
 
 def test_renderer_output_us(renderer_output_us):
@@ -186,12 +188,9 @@ def test_renderer_output_us(renderer_output_us):
     assert np.allclose(reference_us['dp'], renderer_output_us.dp_data, equal_nan=True)
 
 
-@pytest.fixture()
-def renderer_output_netherlands():
-    yield RadarRenderer('tests/data/netherlands.h5', skip_save=True)
-
-
 def test_renderer_output_netherlands(renderer_output_netherlands):
     reference_netherlands = np.load('tests/data/netherlands.npz')
+    reference_netherlands_dpr = np.load('tests/data/netherlands-dpr-only.npz')
     assert np.allclose(renderer_output_netherlands.sp_data, reference_netherlands['rdata'], equal_nan=True)
-    assert np.allclose(renderer_output_netherlands.dp_data, reference_netherlands['dp'], equal_nan=True)
+    assert np.allclose(renderer_output_netherlands.dp_data[0:10, :, :], reference_netherlands['dp'][0:10, :, :], equal_nan=True)
+    assert np.allclose(renderer_output_netherlands.dp_data[10:15, :, :], reference_netherlands_dpr['dp'], equal_nan=True)

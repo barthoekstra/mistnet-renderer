@@ -2,7 +2,6 @@
 """
 Renderer of weather radar data for MistNet CNN
 
-@TODO: Add logger
 """
 
 import datetime
@@ -37,18 +36,19 @@ class RadarRenderer:
         'Netherlands': [0.3, 1.2, 2.0, 2.7, 4.5],
         'United States': [0.5, 1.5, 2.5, 3.5, 4.5]
     }
-    standard_target_sp_products = {
-        'Germany': ['DBZH', 'VRADH', 'WRADH'],
-        'Netherlands': ['DBZH', 'VRADH', 'WRADH'],
-        'United States': ['DBZH', 'VRADH', 'WRADH']
-    }
-    standard_target_dp_products = {
-        'Germany': ['RHOHV', 'ZDR'],
-        'Netherlands': ['RHOHV', 'ZDR'],
-        'United States': []
-    }
 
     def __init__(self, pvolfile, **kwargs):
+        self.standard_target_sp_products = {
+            'Germany': ['DBZH', 'VRADH', 'WRADH'],
+            'Netherlands': ['DBZH', 'VRADH', 'WRADH'],
+            'United States': ['DBZH', 'VRADH', 'WRADH']
+        }
+        self.standard_target_dp_products = {
+            'Germany': ['RHOHV', 'ZDR'],
+            'Netherlands': ['RHOHV', 'ZDR'],
+            'United States': []
+        }
+
         self.pvolfile = pathlib.Path(pvolfile).resolve()
         self.output_type = kwargs.get('output_type', 'npz')
         self.output_file = kwargs.get('output_file', pathlib.Path(self.pvolfile.parent.as_posix() + '/' +
@@ -75,6 +75,7 @@ class RadarRenderer:
 
             self._f = self.load_odim_file(self.pvolfile)
             self.radar = self.load_radar_volume(self._f)
+            self._f.close()
 
             if self.target_elevations is None:
                 self.target_elevations = self.standard_target_elevations[self.radar['country']]
@@ -298,16 +299,21 @@ class RadarRenderer:
             if 'RHOHV' in self.target_dp_products and 'RHOHV' not in products:
                 raise RadarException('RHOHV is missing and cannot be computed at target elevation: {}.'.format(elev))
 
-            targets_dp = self.target_dp_products
-            try:
-                remove_values = ['ZDR', 'DBZH', 'DBZV', 'RHOHV']
-                for value in remove_values:
+            # # RHOHV and ZDR are present or can be derived, so we can also derive DPR.
+            # if 'DPR' in self.target_dp_products:
+            #     self.target_dp_products.remove('DPR')
+
+            targets_dp = self.target_dp_products.copy()
+
+            remove_values = ['ZDR', 'DBZH', 'DBZV', 'RHOHV']
+            for value in remove_values:
+                try:
                     targets_dp.remove(value)
-            except ValueError:
-                pass
+                except ValueError:
+                    pass
 
             check_dp_products = all(product in products for product in targets_dp)
-            if not check_dp_products:
+            if not check_dp_products and len(targets_dp) > 0:
                 raise RadarException('Some of the target-dual-pol products ({}) are missing at the elevations ({}) '
                                      'closest to the target elevations ({}).'
                                      .format(self.target_dp_products, picked_elevs, self.target_elevations))
@@ -381,6 +387,12 @@ class RadarRenderer:
         """
         Render the radar volume, consisting of the scans at the target elevations, to the MistNet specifications.
 
+        If ZDR and RHOHV are present, depolarization ratio is calculated using Kilambi et al. (2018).
+
+        Kilambi, A., Fabry, F., & Meunier, V. (2018). A Simple and Effective Method for Separating Meteorological
+            from Nonmeteorological Targets Using Dual-Polarization Data.
+            Journal of Atmospheric and Oceanic Technology, 35(7), 1415-1424.
+
         :return: dictionary of interpolated (rendered) radar volume
         """
         interpolated_volume = {}
@@ -405,17 +417,30 @@ class RadarRenderer:
                 parsed_products.pop('DBZV')
                 products.update({'ZDR': products['DBZH']})
 
-            # Calculate depolarization ratio
-            if 'DEPOL' in self.target_dp_products:
-                pass
+            # Calculate depolarization ratio if ZDR and RHOHV are present
+            if 'ZDR' in parsed_products.keys() and 'RHOHV' in parsed_products.keys():
+                zdr_linear = np.power(10, parsed_products['ZDR'] / 10)
+                dpr_linear = (zdr_linear + 1 - 2 * np.sqrt(zdr_linear) * parsed_products['RHOHV']) / \
+                             (zdr_linear + 1 + 2 * np.sqrt(zdr_linear) * parsed_products['RHOHV'])
+
+                with np.errstate(invalid='ignore'):
+                    # There are NaNs in the input arrays, so we have to ignore those
+                    dpr = 10 * np.log10(dpr_linear)
+
+                parsed_products['DPR'] = dpr
+                products.update({'DPR': products['DBZH']})
 
             interpolated_volume[elevation] = self.interpolate_elevation(elevation, parsed_products, scan_index=products)
 
-        # With ZDR calculated, we can now remove it from the list of target products
+        # With ZDR calculated, we can now remove DBZH and DBZV from the list of target products
         if 'DBZV' in self.target_dp_products:
             self.target_dp_products.remove('DBZH')
             self.target_dp_products.remove('DBZV')
             self.target_dp_products.append('ZDR')
+
+        # With DPR calculated, we still need to add it to target_dp_products for proper stacking
+        if 'DPR' in interpolated_volume[list(self.elevations)[0]].keys():
+            self.target_dp_products.append('DPR')
 
         return interpolated_volume
 
@@ -615,7 +640,7 @@ if __name__ == "__main__":
     input_path = pathlib.Path(args.input).resolve()
     output_path = pathlib.Path(args.output).resolve()
 
-    if input_path.is_file() and output_path.is_file():
+    if input_path.is_file() and not output_path.is_dir():
         RadarRenderer(input_path, output_file=output_path, target_elevations=args.e, output_type=args.t)
 
     elif input_path.is_file() and output_path.is_dir():
