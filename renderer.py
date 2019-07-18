@@ -22,12 +22,12 @@ class RadarRenderer:
     range_max = 150000  # in meters
     pixel_dimensions = 600  # width and height of interpolated image in pixels
     padding = 4  # number of pixels to pad interpolated image with on all sides (for the convolutions)
-    max_elevation_spread = 6  # maximum difference in degrees between lowest and highest elevation
+    max_elevation_spread = 6  # maximum difference in degrees between lowest and highest scan elevation
 
     # Radar metadata
     odim_radar_db = None
     correct_products = {
-        'Germany': ['RHOHV'],
+        'Germany': ['URHOHV'],
         'Netherlands': [],
         'United States': []
     }
@@ -36,19 +36,18 @@ class RadarRenderer:
         'Netherlands': [0.3, 1.2, 2.0, 2.7, 4.5],
         'United States': [0.5, 1.5, 2.5, 3.5, 4.5]
     }
+    standard_target_sp_products = {
+        'Germany': ['DBZH', 'VRADH', 'WRADH'],
+        'Netherlands': ['DBZH', 'VRADH', 'WRADH'],
+        'United States': ['DBZH', 'VRADH', 'WRADH']
+    }
+    standard_target_dp_products = {
+        'Germany': ['URHOHV', 'ZDR'],
+        'Netherlands': ['RHOHV', 'ZDR'],
+        'United States': []
+    }
 
     def __init__(self, pvolfile, **kwargs):
-        self.standard_target_sp_products = {
-            'Germany': ['DBZH', 'VRADH', 'WRADH'],
-            'Netherlands': ['DBZH', 'VRADH', 'WRADH'],
-            'United States': ['DBZH', 'VRADH', 'WRADH']
-        }
-        self.standard_target_dp_products = {
-            'Germany': ['RHOHV', 'ZDR'],
-            'Netherlands': ['RHOHV', 'ZDR'],
-            'United States': []
-        }
-
         self.pvolfile = pathlib.Path(pvolfile).resolve()
         self.output_type = kwargs.get('output_type', 'npz')
         self.output_file = kwargs.get('output_file', pathlib.Path(self.pvolfile.parent.as_posix() + '/' +
@@ -78,13 +77,13 @@ class RadarRenderer:
             self._f.close()
 
             if self.target_elevations is None:
-                self.target_elevations = self.standard_target_elevations[self.radar['country']]
+                self.target_elevations = self.standard_target_elevations[self.radar['country']].copy()
 
             if self.target_sp_products is None:
-                self.target_sp_products = self.standard_target_sp_products[self.radar['country']]
+                self.target_sp_products = self.standard_target_sp_products[self.radar['country']].copy()
 
             if self.target_dp_products is None:
-                self.target_dp_products = self.standard_target_dp_products[self.radar['country']]
+                self.target_dp_products = self.standard_target_dp_products[self.radar['country']].copy()
 
             self.selected_data = self.select_datasets_odim()
 
@@ -667,7 +666,6 @@ if __name__ == "__main__":
         unprocessed_files = [file for file in raw_files if file.stem not in rendered_files]
 
         print('Files left to process: {}'.format(len(unprocessed_files)))
-
 
         def render_radar_file(file):
             output_file = pathlib.Path(output_path.as_posix() + '/' + file.stem + '.' + args.t)
