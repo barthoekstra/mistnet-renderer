@@ -44,7 +44,7 @@ def test_renderer_setup(renderer):
     assert renderer.target_elevations == [0.5, 1.5, 2.5, 3.5, 4.5]
     assert renderer.skipped_scans == []
     assert renderer.target_sp_products == ['DBZH', 'VRADH', 'WRADH']
-    assert renderer.target_dp_products == ['RHOHV', 'ZDR']
+    assert renderer.target_dp_products == ['URHOHV', 'ZDR']
     assert renderer.skip_render
     assert renderer._f.id.id == 0  # Check if file is closed
     assert renderer.odim_radar_db[0]['wmocode'] == '11038'  # Check if ODIM DB is correctly loaded
@@ -56,7 +56,7 @@ def test_renderer_radar_dict(renderer):
 
     assert renderer.radar['country'] == 'Germany'
 
-    required_keys = ['DBZH', 'WRADH', 'VRADH', 'RHOHV', 'ZDR', 'DBZV', 'highprf', 'lowprf', 'startdate', 'starttime',
+    required_keys = ['DBZH', 'WRADH', 'VRADH', 'URHOHV', 'ZDR', 'DBZV', 'highprf', 'lowprf', 'startdate', 'starttime',
                      'enddate', 'endtime', 'elangle', 'nbins', 'nrays', 'rscale', 'rstart']
     assert all(key in renderer.radar[0.5].keys() for key in required_keys)
 
@@ -69,7 +69,7 @@ def test_renderer_select_data_odim_output(renderer):
     selected_elevations = [0.5, 1.5, 2.5, 3.5, 4.5]
     assert list(renderer.selected_data.keys()) == selected_elevations
 
-    datasets = {'DBZH': None, 'VRADH': None, 'WRADH': None, 'RHOHV': None, 'ZDR': None}
+    datasets = {'DBZH': None, 'VRADH': None, 'WRADH': None, 'URHOHV': None, 'ZDR': None}
     assert renderer.selected_data == {elevation: datasets for elevation in selected_elevations}
 
 
@@ -118,10 +118,17 @@ def test_renderer_select_data_odim_no_target_dp_products(renderer):
 
 def test_renderer_select_data_odim_no_rhohv_product(renderer):
     for elevation in renderer.elevations:
-        renderer.radar[elevation].pop('RHOHV', None)
+        renderer.radar[elevation].pop('URHOHV', None)
 
     with pytest.raises(RadarException):
         renderer.select_datasets_odim()
+
+
+def test_renderer_select_data_odim_two_rhohv_products(renderer):
+    dp_products = ['ZDR', 'RHOHV', 'URHOHV']
+
+    with pytest.raises(RadarException):
+        RadarRenderer('tests/data/germany.h5', target_dp_products=dp_products, skip_save=True)
 
 
 def test_renderer_select_data_odim_no_zdr_product(renderer):
@@ -176,10 +183,8 @@ def test_correct_with_reflectivity(renderer_netherlands):
 
 def test_renderer_output_germany(renderer_output_germany):
     reference_germany = np.load('tests/data/germany.npz')
-    reference_germany_dpr = np.load('tests/data/germany-dpr-only.npz')
     assert np.allclose(renderer_output_germany.sp_data, reference_germany['rdata'], equal_nan=True)
-    assert np.allclose(renderer_output_germany.dp_data[0:10, :, :], reference_germany['dp'][0:10, :, :], equal_nan=True)
-    assert np.allclose(renderer_output_germany.dp_data[10:15, :, :], reference_germany_dpr['dp'], equal_nan=True)
+    assert np.allclose(renderer_output_germany.dp_data, reference_germany['dp'], equal_nan=True)
 
 
 def test_renderer_output_us(renderer_output_us):
@@ -190,7 +195,5 @@ def test_renderer_output_us(renderer_output_us):
 
 def test_renderer_output_netherlands(renderer_output_netherlands):
     reference_netherlands = np.load('tests/data/netherlands.npz')
-    reference_netherlands_dpr = np.load('tests/data/netherlands-dpr-only.npz')
     assert np.allclose(renderer_output_netherlands.sp_data, reference_netherlands['rdata'], equal_nan=True)
-    assert np.allclose(renderer_output_netherlands.dp_data[0:10, :, :], reference_netherlands['dp'][0:10, :, :], equal_nan=True)
-    assert np.allclose(renderer_output_netherlands.dp_data[10:15, :, :], reference_netherlands_dpr['dp'], equal_nan=True)
+    assert np.allclose(renderer_output_netherlands.dp_data, reference_netherlands['dp'], equal_nan=True)
