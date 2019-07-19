@@ -298,10 +298,6 @@ class RadarRenderer:
             if 'RHOHV' in self.target_dp_products and 'RHOHV' not in products:
                 raise RadarException('RHOHV is missing and cannot be computed at target elevation: {}.'.format(elev))
 
-            # # RHOHV and ZDR are present or can be derived, so we can also derive DPR.
-            # if 'DPR' in self.target_dp_products:
-            #     self.target_dp_products.remove('DPR')
-
             targets_dp = self.target_dp_products.copy()
 
             remove_values = ['ZDR', 'DBZH', 'DBZV', 'RHOHV']
@@ -416,14 +412,18 @@ class RadarRenderer:
                 parsed_products.pop('DBZV')
                 products.update({'ZDR': products['DBZH']})
 
-            # Calculate depolarization ratio if ZDR and RHOHV are present
-            if 'ZDR' in parsed_products.keys() and 'RHOHV' in parsed_products.keys():
+            # Calculate depolarization ratio if ZDR and RHOHV/URHOHV are present
+            rhohv_product = [rhohv for rhohv in ['RHOHV', 'URHOHV'] if rhohv in parsed_products.keys()]
+            if len(rhohv_product) > 1:
+                raise RadarException('Both corrected RhoHV and uncorrected RhoHV are being parsed, but only one should'
+                                     'be used at a time. Change the value of target_dp_products.')
+
+            if 'ZDR' in parsed_products.keys() and rhohv_product:
                 zdr_linear = np.power(10, parsed_products['ZDR'] / 10)
-                dpr_linear = (zdr_linear + 1 - 2 * np.sqrt(zdr_linear) * parsed_products['RHOHV']) / \
-                             (zdr_linear + 1 + 2 * np.sqrt(zdr_linear) * parsed_products['RHOHV'])
+                dpr_linear = (zdr_linear + 1 - 2 * np.sqrt(zdr_linear) * parsed_products[rhohv_product[0]]) / \
+                             (zdr_linear + 1 + 2 * np.sqrt(zdr_linear) * parsed_products[rhohv_product[0]])
 
                 with np.errstate(invalid='ignore'):
-                    # There are NaNs in the input arrays, so we have to ignore those
                     dpr = 10 * np.log10(dpr_linear)
 
                 parsed_products['DPR'] = dpr
